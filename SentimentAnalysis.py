@@ -1,3 +1,17 @@
+def clean_text(text):
+    """
+    Clean input text by removing HTML tags, normalizing whitespace, and handling emojis.
+    """
+    import html
+    # Remove HTML tags
+    text = re.sub(r'<.*?>', '', text)
+    # Unescape HTML entities
+    text = html.unescape(text)
+    # Remove emojis (basic unicode range)
+    text = re.sub(r'[\U00010000-\U0010ffff]', '', text)
+    # Normalize whitespace
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
 """
 A text classifier to determine whether a
 movie review is expressing positive or negative sentiment. The data come from
@@ -19,7 +33,39 @@ import os
 import re
 from scipy.sparse import csr_matrix
 from sklearn.model_selection import KFold
+
 from sklearn.linear_model import LogisticRegression
+from sklearn.svm import LinearSVC
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix, classification_report, roc_curve, auc
+def plot_feature_importance(feature_names, importances, top_n=10, title='Feature Importance', filename='feature_importance.png'):
+    """Plot a bar chart of the top_n most important features."""
+    importances = np.array(importances)
+    indices = np.argsort(np.abs(importances))[-top_n:][::-1]
+    plt.figure(figsize=(10, 5))
+    plt.bar(range(top_n), importances[indices], align='center')
+    plt.xticks(range(top_n), [feature_names[i] for i in indices], rotation=45, ha='right')
+    plt.title(title)
+    plt.tight_layout()
+    plt.savefig(filename)
+    print(f'Feature importance plot saved as {filename}')
+
+def plot_roc_curve(y_true, y_score, filename='roc_curve.png'):
+    """Plot ROC curve and save to file."""
+    fpr, tpr, _ = roc_curve(y_true, y_score)
+    roc_auc = auc(fpr, tpr)
+    plt.figure()
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver Operating Characteristic')
+    plt.legend(loc='lower right')
+    plt.savefig(filename)
+    print(f'ROC curve saved as {filename}')
 
 import string
 import tarfile
@@ -53,9 +99,9 @@ def read_data(path):
                'pos', it is 1, else 0)
     """
     fnames = sorted([f for f in glob.glob(os.path.join(path, 'pos', '*.txt'))])
-    data = [(1, open(f).readlines()[0]) for f in sorted(fnames)]
+    data = [(1, clean_text(open(f).readlines()[0])) for f in sorted(fnames)]
     fnames = sorted([f for f in glob.glob(os.path.join(path, 'neg', '*.txt'))])
-    data += [(0, open(f).readlines()[0]) for f in sorted(fnames)]
+    data += [(0, clean_text(open(f).readlines()[0])) for f in sorted(fnames)]
     data = sorted(data, key=lambda x: x[1])
     return np.array([d[1] for d in data]), np.array([d[0] for d in data])
 
@@ -561,9 +607,23 @@ def print_top_misclassified(test_docs, test_labels, X_test, clf, n):
 
 
 
+
+def get_classifier(name):
+    """Return a classifier instance by name."""
+    if name == 'logreg':
+        return LogisticRegression(max_iter=200)
+    elif name == 'svm':
+        return LinearSVC(max_iter=2000)
+    elif name == 'rf':
+        return RandomForestClassifier(n_estimators=100)
+    elif name == 'nb':
+        return MultinomialNB()
+    else:
+        raise ValueError(f"Unknown classifier: {name}")
+
 def main():
     """
-    Main entry point. Now supports classic and TF-IDF/n-gram feature extraction.
+    Main entry point. Now supports classic and TF-IDF/n-gram feature extraction, multiple models, and extra metrics.
     """
     import argparse
     parser = argparse.ArgumentParser(description="Sentiment Analysis IMDB")
@@ -571,6 +631,8 @@ def main():
                         help='Feature extraction mode: classic (default) or tfidf')
     parser.add_argument('--ngram_range', type=str, default='1,1',
                         help='n-gram range for tfidf mode, e.g., "1,2" for unigrams and bigrams')
+    parser.add_argument('--model', choices=['logreg', 'svm', 'rf', 'nb'], default='logreg',
+                        help='Classifier: logreg (default), svm, rf (Random Forest), nb (Naive Bayes)')
     args = parser.parse_args()
 
     # Download and read data.
@@ -594,17 +656,21 @@ def main():
         # Fit best classifier.
         clf, vocab = fit_best_classifier(docs, labels, results[0])
 
-        # Print top coefficients per class.
-        print('\nTOP COEFFICIENTS PER CLASS:')
-        print('negative words:')
-        print('\n'.join(['%s: %.5f' % (t,v) for t,v in top_coefs(clf, 0, 5, vocab)]))
-        print('\npositive words:')
-        print('\n'.join(['%s: %.5f' % (t,v) for t,v in top_coefs(clf, 1, 5, vocab)]))
+        # Print top coefficients per class (only for logreg).
+        if args.model == 'logreg':
+            print('\nTOP COEFFICIENTS PER CLASS:')
+            print('negative words:')
+            print('\n'.join(['%s: %.5f' % (t,v) for t,v in top_coefs(clf, 0, 5, vocab)]))
+            print('\npositive words:')
+            print('\n'.join(['%s: %.5f' % (t,v) for t,v in top_coefs(clf, 1, 5, vocab)]))
 
         # Parse test data
         test_docs, test_labels, X_test = parse_test_data(best_result, vocab)
         predictions = clf.predict(X_test)
         print('testing accuracy=%f' % accuracy_score(test_labels, predictions))
+        print(classification_report(test_labels, predictions, digits=4))
+        print('Confusion matrix:')
+        print(confusion_matrix(test_labels, predictions))
         print('\nTOP MISCLASSIFIED TEST DOCUMENTS:')
         print_top_misclassified(test_docs, test_labels, X_test, clf, 5)
 
@@ -613,45 +679,67 @@ def main():
         print(f"Using TfidfVectorizer with ngram_range={ngram_range}")
         vectorizer = TfidfVectorizer(lowercase=True, ngram_range=ngram_range, stop_words='english')
         X = vectorizer.fit_transform(docs)
-        clf = LogisticRegression(max_iter=200)
+        clf = get_classifier(args.model)
         kf = KFold(n_splits=5, shuffle=False, random_state=42)
-        accs = []
+        accs, precs, recs, f1s = [], [], [], []
         for train_idx, test_idx in kf.split(X):
             clf.fit(X[train_idx], labels[train_idx])
             preds = clf.predict(X[test_idx])
             accs.append(accuracy_score(labels[test_idx], preds))
+            precs.append(precision_score(labels[test_idx], preds, zero_division=0))
+            recs.append(recall_score(labels[test_idx], preds, zero_division=0))
+            f1s.append(f1_score(labels[test_idx], preds, zero_division=0))
         print(f"Mean cross-validation accuracy: {np.mean(accs):.4f}")
+        print(f"Mean precision: {np.mean(precs):.4f}")
+        print(f"Mean recall: {np.mean(recs):.4f}")
+        print(f"Mean F1: {np.mean(f1s):.4f}")
 
         # Fit on all data
         clf.fit(X, labels)
         feature_names = np.array(vectorizer.get_feature_names_out())
-        coefs = clf.coef_[0]
-        top_pos = np.argsort(coefs)[-5:][::-1]
-        top_neg = np.argsort(coefs)[:5]
-        print('\nTOP COEFFICIENTS PER CLASS:')
-        print('negative words:')
-        for idx in top_neg:
-            print(f'{feature_names[idx]}: {abs(coefs[idx]):.5f}')
-        print('\npositive words:')
-        for idx in top_pos:
-            print(f'{feature_names[idx]}: {coefs[idx]:.5f}')
+        # Feature importance visualization
+        if args.model == 'logreg':
+            coefs = clf.coef_[0]
+            top_pos = np.argsort(coefs)[-5:][::-1]
+            top_neg = np.argsort(coefs)[:5]
+            print('\nTOP COEFFICIENTS PER CLASS:')
+            print('negative words:')
+            for idx in top_neg:
+                print(f'{feature_names[idx]}: {abs(coefs[idx]):.5f}')
+            print('\npositive words:')
+            for idx in top_pos:
+                print(f'{feature_names[idx]}: {coefs[idx]:.5f}')
+            plot_feature_importance(feature_names, coefs, top_n=10, title='Logistic Regression Feature Importance')
+        elif args.model == 'rf':
+            importances = clf.feature_importances_
+            plot_feature_importance(feature_names, importances, top_n=10, title='Random Forest Feature Importance')
 
         # Test set
         test_docs, test_labels = read_data(os.path.join('data', 'test'))
         X_test = vectorizer.transform(test_docs)
         preds = clf.predict(X_test)
         print('testing accuracy=%f' % accuracy_score(test_labels, preds))
-        # Print top misclassified
-        probs = clf.predict_proba(X_test)
-        misclassified = []
-        for i in range(len(test_labels)):
-            if preds[i] != test_labels[i]:
-                prob = probs[i][preds[i]]
-                misclassified.append((test_labels[i], preds[i], prob, test_docs[i]))
-        misclassified = sorted(misclassified, key=lambda x: -x[2])
-        print('\nTOP MISCLASSIFIED TEST DOCUMENTS:')
-        for i in misclassified[:5]:
-            print(f"\nTruth={i[0]} Predicted={i[1]} Proba={i[2]:.6f}\n{i[3]}")
+        print(classification_report(test_labels, preds, digits=4))
+        print('Confusion matrix:')
+        print(confusion_matrix(test_labels, preds))
+        # ROC curve (if supported)
+        if hasattr(clf, 'predict_proba'):
+            probs = clf.predict_proba(X_test)[:, 1]
+            plot_roc_curve(test_labels, probs)
+            misclassified = []
+            for i in range(len(test_labels)):
+                if preds[i] != test_labels[i]:
+                    prob = clf.predict_proba(X_test)[i][preds[i]]
+                    misclassified.append((test_labels[i], preds[i], prob, test_docs[i]))
+            misclassified = sorted(misclassified, key=lambda x: -x[2])
+            print('\nTOP MISCLASSIFIED TEST DOCUMENTS:')
+            for i in misclassified[:5]:
+                print(f"\nTruth={i[0]} Predicted={i[1]} Proba={i[2]:.6f}\n{i[3]}")
+        else:
+            print('\nTOP MISCLASSIFIED TEST DOCUMENTS:')
+            for i, (truth, pred, doc) in enumerate(zip(test_labels, preds, test_docs)):
+                if truth != pred and i < 5:
+                    print(f"\nTruth={truth} Predicted={pred}\n{doc}")
 
 
 if __name__ == '__main__':
