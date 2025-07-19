@@ -20,9 +20,11 @@ import re
 from scipy.sparse import csr_matrix
 from sklearn.model_selection import KFold
 from sklearn.linear_model import LogisticRegression
+
 import string
 import tarfile
 import urllib.request
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 
 
 def download_data():
@@ -558,50 +560,98 @@ def print_top_misclassified(test_docs, test_labels, X_test, clf, n):
         print("\nTruth=%d Predicted=%d Proba=%.6f\n%s" % (i[0], i[1], i[2], i[3]))
 
 
+
 def main():
     """
-    Put it all together.
-    ALREADY DONE.
+    Main entry point. Now supports classic and TF-IDF/n-gram feature extraction.
     """
-    feature_fns = [token_features, token_pair_features, lexicon_features]
+    import argparse
+    parser = argparse.ArgumentParser(description="Sentiment Analysis IMDB")
+    parser.add_argument('--mode', choices=['classic', 'tfidf'], default='classic',
+                        help='Feature extraction mode: classic (default) or tfidf')
+    parser.add_argument('--ngram_range', type=str, default='1,1',
+                        help='n-gram range for tfidf mode, e.g., "1,2" for unigrams and bigrams')
+    args = parser.parse_args()
+
     # Download and read data.
     download_data()
     docs, labels = read_data(os.path.join('data', 'train'))
-    # Evaluate accuracy of many combinations
-    # of tokenization/featurization.
-    results = eval_all_combinations(docs, labels,
-                                    [True, False],
-                                    feature_fns,
-                                    [2,5,10])
-    # Print information about these results.
-    best_result = results[0]
-    worst_result = results[-1]
-    print('best cross-validation result:\n%s' % str(best_result))
-    print('worst cross-validation result:\n%s' % str(worst_result))
-    plot_sorted_accuracies(results)
-    print('\nMean Accuracies per Setting:')
-    print('\n'.join(['%s: %.5f' % (s,v) for v,s in mean_accuracy_per_setting(results)]))
 
-    # Fit best classifier.
-    clf, vocab = fit_best_classifier(docs, labels, results[0])
+    if args.mode == 'classic':
+        feature_fns = [token_features, token_pair_features, lexicon_features]
+        results = eval_all_combinations(docs, labels,
+                                        [True, False],
+                                        feature_fns,
+                                        [2,5,10])
+        best_result = results[0]
+        worst_result = results[-1]
+        print('best cross-validation result:\n%s' % str(best_result))
+        print('worst cross-validation result:\n%s' % str(worst_result))
+        plot_sorted_accuracies(results)
+        print('\nMean Accuracies per Setting:')
+        print('\n'.join(['%s: %.5f' % (s,v) for v,s in mean_accuracy_per_setting(results)]))
 
-    # Print top coefficients per class.
-    print('\nTOP COEFFICIENTS PER CLASS:')
-    print('negative words:')
-    print('\n'.join(['%s: %.5f' % (t,v) for t,v in top_coefs(clf, 0, 5, vocab)]))
-    print('\npositive words:')
-    print('\n'.join(['%s: %.5f' % (t,v) for t,v in top_coefs(clf, 1, 5, vocab)]))
+        # Fit best classifier.
+        clf, vocab = fit_best_classifier(docs, labels, results[0])
 
-    # Parse test data
-    test_docs, test_labels, X_test = parse_test_data(best_result, vocab)
+        # Print top coefficients per class.
+        print('\nTOP COEFFICIENTS PER CLASS:')
+        print('negative words:')
+        print('\n'.join(['%s: %.5f' % (t,v) for t,v in top_coefs(clf, 0, 5, vocab)]))
+        print('\npositive words:')
+        print('\n'.join(['%s: %.5f' % (t,v) for t,v in top_coefs(clf, 1, 5, vocab)]))
 
-    # Evaluate on test set.
-    predictions = clf.predict(X_test)
-    print('testing accuracy=%f' %
-          accuracy_score(test_labels, predictions))
+        # Parse test data
+        test_docs, test_labels, X_test = parse_test_data(best_result, vocab)
+        predictions = clf.predict(X_test)
+        print('testing accuracy=%f' % accuracy_score(test_labels, predictions))
+        print('\nTOP MISCLASSIFIED TEST DOCUMENTS:')
+        print_top_misclassified(test_docs, test_labels, X_test, clf, 5)
 
-    print('\nTOP MISCLASSIFIED TEST DOCUMENTS:')
-    print_top_misclassified(test_docs, test_labels, X_test, clf, 5)
+    elif args.mode == 'tfidf':
+        ngram_range = tuple(int(x) for x in args.ngram_range.split(','))
+        print(f"Using TfidfVectorizer with ngram_range={ngram_range}")
+        vectorizer = TfidfVectorizer(lowercase=True, ngram_range=ngram_range, stop_words='english')
+        X = vectorizer.fit_transform(docs)
+        clf = LogisticRegression(max_iter=200)
+        kf = KFold(n_splits=5, shuffle=False, random_state=42)
+        accs = []
+        for train_idx, test_idx in kf.split(X):
+            clf.fit(X[train_idx], labels[train_idx])
+            preds = clf.predict(X[test_idx])
+            accs.append(accuracy_score(labels[test_idx], preds))
+        print(f"Mean cross-validation accuracy: {np.mean(accs):.4f}")
+
+        # Fit on all data
+        clf.fit(X, labels)
+        feature_names = np.array(vectorizer.get_feature_names_out())
+        coefs = clf.coef_[0]
+        top_pos = np.argsort(coefs)[-5:][::-1]
+        top_neg = np.argsort(coefs)[:5]
+        print('\nTOP COEFFICIENTS PER CLASS:')
+        print('negative words:')
+        for idx in top_neg:
+            print(f'{feature_names[idx]}: {abs(coefs[idx]):.5f}')
+        print('\npositive words:')
+        for idx in top_pos:
+            print(f'{feature_names[idx]}: {coefs[idx]:.5f}')
+
+        # Test set
+        test_docs, test_labels = read_data(os.path.join('data', 'test'))
+        X_test = vectorizer.transform(test_docs)
+        preds = clf.predict(X_test)
+        print('testing accuracy=%f' % accuracy_score(test_labels, preds))
+        # Print top misclassified
+        probs = clf.predict_proba(X_test)
+        misclassified = []
+        for i in range(len(test_labels)):
+            if preds[i] != test_labels[i]:
+                prob = probs[i][preds[i]]
+                misclassified.append((test_labels[i], preds[i], prob, test_docs[i]))
+        misclassified = sorted(misclassified, key=lambda x: -x[2])
+        print('\nTOP MISCLASSIFIED TEST DOCUMENTS:')
+        for i in misclassified[:5]:
+            print(f"\nTruth={i[0]} Predicted={i[1]} Proba={i[2]:.6f}\n{i[3]}")
 
 
 if __name__ == '__main__':

@@ -7,6 +7,7 @@ A Python project for sentiment analysis of movie reviews using data from IMDB.co
 - Tokenizes reviews with options for handling punctuation
 - Removes repeated words
 - Extracts features: token counts, token pairs, and sentiment lexicon features
+- Supports TF-IDF and n-gram features (unigrams, bigrams, etc.)
 - Supports multiple feature combinations and minimum frequency thresholds
 - Uses Logistic Regression for classification
 - Evaluates models with K-Fold cross-validation
@@ -25,11 +26,16 @@ A Python project for sentiment analysis of movie reviews using data from IMDB.co
    ```bash
    pip install numpy scipy scikit-learn matplotlib
    ```
-2. **Run the script:**
+2. **Run the script (classic features):**
    ```bash
-   python SentimentAnalysis.py
+   python SentimentAnalysis.py --mode classic
    ```
-   The script will download the IMDB dataset if not already present, preprocess the data, train and evaluate models, and print results to the console. It will also generate `accuracies.png`.
+   Or, to use TF-IDF and n-gram features:
+   ```bash
+   python SentimentAnalysis.py --mode tfidf --ngram_range 1,2
+   ```
+   (The above uses unigrams and bigrams. You can set any n-gram range, e.g., 1,3 for up to trigrams.)
+   The script will download the IMDB dataset if not already present, preprocess the data, train and evaluate models, and print results to the console. It will also generate `accuracies.png` (for classic mode).
 
 ## Output
 - Prints best and worst cross-validation results
